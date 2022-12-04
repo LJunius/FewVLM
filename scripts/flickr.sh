@@ -16,7 +16,7 @@ CUDA_VISIBLE_DEVICES=$1 python src/flickr.py \
         --num_workers 4 \
         --backbone 't5-base' \
         --output $output \
-        --load snap/pretrain/Epoch30  \
+        --load /root/autodl-tmp/Epoch30-base  \
         --num_beams 5 \
         --batch_size 30 \
         --valid_batch_size 100 \

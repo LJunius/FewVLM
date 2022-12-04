@@ -61,10 +61,11 @@ class TrainerBase(object):
             config_class = T5Config
         else:
             return None
-
-        config = config_class.from_pretrained(self.args.backbone)
-
         args = self.args
+        T5Config.prompt_seq_len = args.prompt_seq_len
+        T5Config.prompt_hidden_size = args.prompt_hidden_size
+        T5Config.prompt_projection = args.prompt_projection
+        config = config_class.from_pretrained(self.args.backbone)
 
         config.feat_dim = args.feat_dim
         config.pos_dim = args.pos_dim

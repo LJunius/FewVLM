@@ -1,4 +1,4 @@
-
+import pandas as pd
 import torch.backends.cudnn as cudnn
 import torch.multiprocessing as mp
 import torch.distributed as dist
@@ -22,6 +22,8 @@ from flickr_data import get_loader
 from utils import load_state_dict, LossMeter, set_global_logging_level
 from pprint import pformat
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 set_global_logging_level(logging.ERROR, ["transformers"])
 
 proj_dir = Path(__file__).resolve().parent.parent
@@ -252,7 +254,6 @@ class Trainer(TrainerBase):
                     dist.barrier()
             if self.verbose:
                 self.save("LAST")
-
         if self.verbose:
 
             # Test Set
@@ -264,9 +265,21 @@ class Trainer(TrainerBase):
                 print(f'\nUploaded checkpoint {best_epoch}', best_path)
 
             test_results = self.evaluate(self.test_loader)
-
+            csv_results = test_results
+            csv_results['prompt_seq_len'] = self.args.prompt_seq_len
+            csv_results['prompt_hidden_size'] = self.args.prompt_hidden_size
+            csv_results['best_epoch'] = best_epoch
             log_str = 'Test set results\n'
             log_str += pformat(test_results)
+            csv_path = os.path.join(self.args.output, "result.csv")
+            if os.path.exists(csv_path) is False:
+                file = open(csv_path, 'w')
+                file.write("prompt_seq_len,prompt_hidden_size,best_epoch,Bleu_1,Bleu_2,Bleu_3,Bleu_4,CIDEr,METEOR,ROUGE_L,SPICE")
+                file.close()
+            data = pd.read_csv(csv_path)
+            data = data.append(csv_results, ignore_index=True)
+
+            data.to_csv(csv_path, index=False)
 
             print(log_str)
 

@@ -54,7 +54,7 @@ def get_optimizer(optim, verbose=False):
 def parse_args(parse=True, **optional_kwargs):
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--seed', type=int, default=9595, help='random seed')
+    parser.add_argument('--seed', type=int, default=3407, help='random seed 9595')
 
     # Data Splits
     parser.add_argument("--train", default='train')
@@ -63,6 +63,12 @@ def parse_args(parse=True, **optional_kwargs):
     parser.add_argument('--test_only', action='store_true')
 
     parser.add_argument('--submit', action='store_true')
+
+    # prompt setting
+    parser.add_argument('--prompt_seq_len', type=int, default=6)
+    parser.add_argument('--prompt_hidden_size', type=int, default=96)
+    parser.add_argument('--prompt_projection', default=True)
+    parser.add_argument('--freeze_backbone', default=True)
 
     # Quick experiments
     parser.add_argument('--train_topk', type=int, default=-1)

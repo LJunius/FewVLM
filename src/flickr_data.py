@@ -14,12 +14,12 @@ from copy import deepcopy
 
 from torch.utils.data.distributed import DistributedSampler
 
-from transformers import T5TokenizerFast
+from transformers import T5TokenizerFast, T5Tokenizer
 from tokenization import FewVLMTokenizerFast
 
-project_dir = Path(__file__).resolve().parent.parent  
+project_dir = Path(__file__).resolve().parent.parent
 workspace_dir = project_dir.parent
-dataset_dir = workspace_dir.joinpath('datasets/').resolve()
+dataset_dir = workspace_dir.joinpath('autodl-tmp/').resolve()
 flickr_dir = dataset_dir.joinpath('flickr30k')
 vg_dir = dataset_dir.joinpath('VG')
 flickr_img_dir = flickr_dir.joinpath('images/')
@@ -45,20 +45,25 @@ class COCOCaptionFineTuneDataset(Dataset):
 
         if self.args.tokenizer is None:
             self.args.tokenizer = self.args.backbone
-
+        proxies = {'http': '127.0.0.1:7890', 'https': '127.0.0.1:7890', "socks5": "127.0.0.1:7890"}
         if 't5' in self.args.tokenizer:
             if self.args.use_vision:
                 self.tokenizer = FewVLMTokenizerFast.from_pretrained(
                     args.backbone,
                     # max_length=self.args.max_text_length,
-                    do_lower_case=self.args.do_lower_case)
+                    do_lower_case=self.args.do_lower_case,
+                    # proxies=proxies,
+                    use_auth_token="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"
+                )
+                # self.tokenizer = T5Tokenizer.from_pretrained("t5-base", do_lower_case=self.args.do_lower_case, use_auth_token="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")
+
             else:
                 self.tokenizer = T5TokenizerFast.from_pretrained(
                     args.backbone,
                     # max_length=self.args.max_text_length,
                     do_lower_case=self.args.do_lower_case)
 
-        data_info_path = dataset_dir.joinpath(f'flickr30k/{args.caption_data}.json')
+        data_info_path = dataset_dir.joinpath(f'/root/autodl-tmp/flickr30k/{args.caption_data}.json')
         with open(data_info_path) as f:
             karpathy_data = json.load(f)
 
@@ -339,13 +344,13 @@ def get_loader(args, split='train', mode='train',
     if mode == 'train':
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=(train_sampler is None),
-            num_workers=workers, pin_memory=True, sampler=train_sampler,
+            num_workers=workers, pin_memory=False, sampler=train_sampler,
             collate_fn=dataset.collate_fn)
     else:
         loader = DataLoader(
             dataset,
             batch_size=batch_size, shuffle=False,
-            num_workers=workers, pin_memory=True,
+            num_workers=workers, pin_memory=False,
             sampler=None,
             collate_fn=dataset.collate_fn,
             drop_last=False)
