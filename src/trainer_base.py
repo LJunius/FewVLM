@@ -65,6 +65,10 @@ class TrainerBase(object):
         T5Config.prompt_seq_len = args.prompt_seq_len
         T5Config.prompt_hidden_size = args.prompt_hidden_size
         T5Config.prompt_projection = args.prompt_projection
+        T5Config.prompt_freeze_backbone = args.prompt_freeze_backbone
+        T5Config.use_prompt_pool_init = args.use_prompt_pool_init
+        T5Config.train_prompt_pool = args.train_prompt_pool
+        T5Config.total = args.prompt_pool_nums
         config = config_class.from_pretrained(self.args.backbone)
 
         config.feat_dim = args.feat_dim

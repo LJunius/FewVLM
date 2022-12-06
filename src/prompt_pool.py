@@ -7,27 +7,28 @@ transformers.logging.set_verbosity(50)
 
 class PromptPool(torch.nn.Module):
     def __init__(self, config, device):
-        # self.total = config.total
-        # self.prompt_projection = config.prompt_projection
-        # self.kdim = 768
-        # self.key_list = []
-        # self.device = device
-        # for i in self.total:
-        #     self.key_list.append([torch.tensor(0.01*torch.rand(self.kdim),requires_grad=True,device=device)])
-        #
-        # if self.prompt_projection:
-        #     # Use a two-layer MLP to encode the prompt
-        #     self.embeddings = [torch.nn.Embedding(config.prompt_seq_len, config.hidden_size) for j in self.total]
-        #     self.embedding = torch.nn.Embedding(config.prompt_seq_len, config.hidden_size)
-        #     self.trans = torch.nn.Sequential(
-        #         torch.nn.Linear(config.hidden_size, config.prompt_hidden_size),
-        #         torch.nn.Tanh(),
-        #         torch.nn.Linear(config.prompt_hidden_size, config.num_decoder_layers * 2 * config.hidden_size)
-        #     )
-        # else:
-        #     self.embeddings = [torch.nn.Embedding(config.prompt_seq_len, config.num_decoder_layers * 2 * config.hidden_size)
-        #                        for j in self.total]
-        pass
+        super().__init__()
+        self.total = config.total
+        self.prompt_projection = config.prompt_projection
+        self.kdim = 768
+        self.key_list = []
+        self.device = device
+        for i in range(self.total):
+            self.key_list.append([torch.tensor(0.01*torch.rand(self.kdim), requires_grad=True,device=device)])
+
+        if self.prompt_projection:
+            # Use a two-layer MLP to encode the prompt
+            self.embeddings = torch.nn.ModuleList([torch.nn.Embedding(config.prompt_seq_len, config.hidden_size) for j in range(self.total)])
+            # self.embedding = torch.nn.Embedding(config.prompt_seq_len, config.hidden_size)
+            self.trans = torch.nn.Sequential(
+                torch.nn.Linear(config.hidden_size, config.prompt_hidden_size),
+                torch.nn.Tanh(),
+                torch.nn.Linear(config.prompt_hidden_size, config.num_decoder_layers * 2 * config.hidden_size)
+            )
+        else:
+            self.embeddings = torch.nn.ModuleList([torch.nn.Embedding(config.prompt_seq_len, config.num_decoder_layers * 2 * config.hidden_size)
+                               for j in range(self.total)])
+
     def loadPool(self):
         pass
 

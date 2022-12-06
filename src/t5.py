@@ -23,7 +23,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import CrossEntropyLoss
-
+from prompt_pool import PromptEncoder
 
 
 from transformers.activations import ACT2FN
@@ -818,6 +818,65 @@ class T5Stack(T5PreTrainedModel):
         # Model parallel
         self.model_parallel = False
         self.device_map = None
+        # ----prompt init----
+        prompt_token = torch.arange(config.prompt_seq_len).long()
+        self.prompt = nn.ModuleList([PromptEncoder(config)])
+        self.prompt_config = [{
+            "n_heads": config.num_heads,
+            "n_embd": config.hidden_size // config.num_heads,
+            "n_layers": config.num_hidden_layers,
+            "prompt_seq_len": config.prompt_seq_len,
+            "prompt_tokens": prompt_token
+        },]
+        if config.is_decoder is True:
+            self.prompt.append(PromptEncoder(config))
+            prompt_token_2 = torch.arange(config.prompt_seq_len).long()
+            self.prompt_config.append({
+                "n_heads": config.num_heads,
+                "n_embd": config.hidden_size // config.num_heads,
+                "n_layers": config.num_hidden_layers,
+                "prompt_seq_len": config.prompt_seq_len,
+                "prompt_tokens": prompt_token_2
+            })
+
+    def get_prompt(self, batch_size, prompt_config, prompt_encoder):
+        prompt_tokens = prompt_config["prompt_tokens"].unsqueeze(0).expand(batch_size, -1).to(self.device)
+        prompt_kvs = prompt_encoder(prompt_tokens)
+
+        # bsz, seqlen, _ = past_key_values.shape
+        prompt_kvs = prompt_kvs.view(
+            batch_size,
+            prompt_config["prompt_seq_len"],
+            prompt_config["n_layers"] * 2,
+            prompt_config["n_heads"],
+            prompt_config["n_embd"]
+        )
+        prompt_kvs = self.dropout(prompt_kvs)
+        prompt_kvs = prompt_kvs.permute([2, 0, 3, 1, 4]).split(2)
+        return prompt_kvs
+
+    def similarity(self, pool, q, k, topN):
+        q = nn.functional.normalize(q, dim=-1)
+        k = nn.functional.normalize(k, dim=-1)
+
+        sim = torch.matmul(q, k.T)  # (B, T)
+        dist = 1 - sim
+
+        val, idx = torch.topk(dist, topN, dim=1, largest=False)
+
+        dist_pick = []
+        for b in range(idx.shape[0]):
+            pick = []
+            for i in range(idx.shape[1]):
+                pick.append(dist[b][idx[b][i]])
+            dist_pick.append(torch.stack(pick))
+
+        dist = torch.stack(dist_pick)
+
+        return dist, idx
+
+    def get_prompt_form_prompt_pool(self):
+        pass
 
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
@@ -871,13 +930,40 @@ class T5Stack(T5PreTrainedModel):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
-        prompt_kvs=None
+        prompt_kvs=None,
+        use_prompt=False,
     ):
         # Model parallel
         if self.model_parallel:
             torch.cuda.set_device(self.first_device)
             self.embed_tokens = self.embed_tokens.to(self.first_device)
         use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        if use_prompt is True:
+            batch_size = input_ids.shape[0]
+            if self.is_decoder is True:
+                prompt_attention_mask = torch.ones(batch_size, self.prompt_config[0]["prompt_seq_len"]).to(
+                    self.device)
+                encoder_attention_mask = torch.cat([prompt_attention_mask, encoder_attention_mask], dim=1)
+
+                prompt1 = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[0],
+                                          prompt_encoder=self.prompt[0])
+                prompt2 = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[1],
+                                          prompt_encoder=self.prompt[1])
+                prompt_kvs_1 = torch.tensor([]).to(self.device)
+                prompt_kvs_2 = torch.tensor([]).to(self.device)
+                for i, prompt in enumerate(prompt1):
+                    prompt_kvs_1 = torch.cat([prompt_kvs_1, prompt], dim=0)
+                for i, prompt in enumerate(prompt2):
+                    prompt_kvs_2 = torch.cat([prompt_kvs_2, prompt], dim=0)
+                prompt_kvs = torch.cat([prompt_kvs_1, prompt_kvs_2], dim=-1)
+                prompt_kvs = prompt_kvs.split(2)
+            else:
+                prompt_kvs = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[0],
+                                             prompt_encoder=self.prompt[0])
+        else:
+            prompt_kvs = None
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -923,6 +1009,7 @@ class T5Stack(T5PreTrainedModel):
         # initialize past_key_values with `None` if past does not exist
         if past_key_values is None:
             past_key_values = [None] * len(self.block)
+
         if prompt_kvs is not None:
             prompt_seq_len = prompt_kvs[0][0].shape[2]
             prompt_attention_mask = torch.ones(batch_size, prompt_seq_len).to(self.device)
@@ -981,7 +1068,7 @@ class T5Stack(T5PreTrainedModel):
                 past_key_value=past_key_value,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
-                prompt_kv=prompt_kv
+                prompt_kv=prompt_kv,
             )
             # layer_outputs is a tuple with:
             # hidden-states, key-value-states, (self-attention weights), (self-attention position bias), (cross-attention weights), (cross-attention position bias)

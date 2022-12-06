@@ -19,7 +19,7 @@ from transformers.modeling_outputs import ModelOutput, BaseModelOutput, BaseMode
 from transformers.modeling_utils import PreTrainedModel, find_pruneable_heads_and_indices, prune_linear_layer
 from transformers.utils import logging
 from transformers import BeamScorer, BeamSearchScorer
-from prompt_pool import PromptEncoder
+from prompt_pool import PromptEncoder, PromptPool
 # from utils import *
 
 logger = logging.get_logger(__name__)
@@ -106,7 +106,7 @@ class VisualEmbedding(nn.Module):
         assert pos.size() == (B, N, 4)
 
         feat_embedding = self.feat_embedding(feats)
-
+        query_embed = feat_embedding[0][0]
         device = feats.device
         dtype = feats.dtype
 
@@ -141,7 +141,7 @@ class VisualEmbedding(nn.Module):
             if self.config.use_vis_layer_norm:
                 vis_embedding = self.layer_norm(vis_embedding)
 
-        return vis_embedding
+        return vis_embedding, query_embed
 
 
 class JointEncoder(T5Stack):
@@ -166,6 +166,19 @@ class JointEncoder(T5Stack):
         self.init_weights()
         self.model_parallel = False
         self.device_map = None
+        # ----prompt init----
+        prompt_token = torch.arange(config.prompt_seq_len).long()
+        self.prompt = nn.ModuleList([PromptEncoder(config)])
+        self.prompt_config = [{
+            "n_heads": config.num_heads,
+            "n_embd": config.hidden_size // config.num_heads,
+            "n_layers": config.num_hidden_layers,
+            "prompt_seq_len": config.prompt_seq_len,
+            "prompt_tokens": prompt_token
+        }, ]
+        if config.train_prompt_pool is True: #TODO: 修改prompt pool和single prompt的存在关系
+            self.prompt_pool = PromptPool(config, self.device)
+        print('')
 
     def set_input_embeddings(self, new_embeddings):
         self.embed_tokens = new_embeddings
@@ -186,7 +199,8 @@ class JointEncoder(T5Stack):
         output_attentions=None,
         output_hidden_states=None,
         return_dict=None,
-        prompt_kvs=None
+        prompt_kvs=None,
+        use_prompt=False
     ):
 
         if inputs_embeds is None:
@@ -204,9 +218,8 @@ class JointEncoder(T5Stack):
         if len(vis_inputs) == 4:
             obj_order_ids = vis_inputs[3]
 
-        vis_embeds = self.visual_embedding(
+        vis_embeds, query_embed = self.visual_embedding(
             vis_feats, boxes, img_order_ids, obj_order_ids)
-
         V_L = vis_embeds.size(1)
 
         inputs_embeds = torch.cat([inputs_embeds, vis_embeds], dim=1)
@@ -219,10 +232,17 @@ class JointEncoder(T5Stack):
 
         attention_mask = torch.cat([attention_mask, vis_attention_mask], dim=1)
         prompt_seq_len = 0
-        if prompt_kvs is not None:
-            prompt_seq_len = prompt_kvs[0][0].shape[2]
-            prompt_attention_mask = torch.ones(B, prompt_kvs[0][0].shape[2]).to(self.device)
-            attention_mask = torch.cat((prompt_attention_mask, attention_mask), dim=1)
+        if use_prompt is True:
+            if self.config.train_prompt_pool is True:
+                # TODO
+                pass
+            else:
+                batch_size = input_ids.shape[0]
+                prompt_kvs = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[0],
+                                             prompt_encoder=self.prompt[0])
+                prompt_seq_len = prompt_kvs[0][0].shape[2]
+                prompt_attention_mask = torch.ones(B, prompt_kvs[0][0].shape[2]).to(self.device)
+                attention_mask = torch.cat((prompt_attention_mask, attention_mask), dim=1)
 
         # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask = self.get_extended_attention_mask(
@@ -379,41 +399,10 @@ class FewVLM(T5ForConditionalGeneration):
 
         self.init_weights()
 
-        # ----prompt init----
-        encoder_prompt_token = torch.arange(config.prompt_seq_len).long()
-        self.encoder_prompt = PromptEncoder(config)
-        self.encoder_prompt_config = {
-            "n_heads": config.num_heads,
-            "n_embd": config.hidden_size // config.num_heads,
-            "n_layers": config.num_hidden_layers,
-            "prompt_seq_len": config.prompt_seq_len,
-            "prompt_tokens": encoder_prompt_token
-        }
-
-        decoder_prompt_token_1 = torch.arange(config.prompt_seq_len).long()
-        self.decoder_prompt_1 = PromptEncoder(config)
-        self.decoder_prompt_config_1 = {
-            "n_heads": config.num_heads,
-            "n_embd": config.hidden_size // config.num_heads,
-            "n_layers": config.num_decoder_layers,
-            "prompt_seq_len": config.prompt_seq_len,
-            "prompt_tokens": decoder_prompt_token_1
-        }
-
-        decoder_prompt_token_2 = torch.arange(config.prompt_seq_len).long()
-        self.decoder_prompt_2 = PromptEncoder(config)
-        self.decoder_prompt_config_2 = {
-            "n_heads": config.num_heads,
-            "n_embd": config.hidden_size // config.num_heads,
-            "n_layers": config.num_hidden_layers,
-            "prompt_seq_len": config.prompt_seq_len,
-            "prompt_tokens": decoder_prompt_token_2
-        }
-
         logger.info("tune parameter:")
         for name, param in self.named_parameters():
-            if (name.startswith("encoder_prompt") or name.startswith("decoder_prompt")) is False:
-                if config.freeze_backbone is True:
+            if (name.startswith("encoder.prompt") or name.startswith("decoder.prompt")) is False:
+                if config.prompt_freeze_backbone is True:
                     param.requires_grad = False
             else:
                 print(name)
@@ -421,22 +410,6 @@ class FewVLM(T5ForConditionalGeneration):
         # Model parallel
         self.model_parallel = False
         self.device_map = None
-
-    def get_prompt(self, batch_size, prompt_config, prompt_encoder):
-        prompt_tokens = prompt_config["prompt_tokens"].unsqueeze(0).expand(batch_size, -1).to(self.device)
-        prompt_kvs = prompt_encoder(prompt_tokens)
-
-        # bsz, seqlen, _ = past_key_values.shape
-        prompt_kvs = prompt_kvs.view(
-            batch_size,
-            prompt_config["prompt_seq_len"],
-            prompt_config["n_layers"] * 2,
-            prompt_config["n_heads"],
-            prompt_config["n_embd"]
-        )
-        prompt_kvs = self.dropout(prompt_kvs)
-        prompt_kvs = prompt_kvs.permute([2, 0, 3, 1, 4]).split(2)
-        return prompt_kvs
 
     def set_input_embeddings(self, new_embeddings):
         self.shared = new_embeddings
@@ -504,13 +477,6 @@ class FewVLM(T5ForConditionalGeneration):
 
 
         if encoder_outputs is None:
-            batch_size = input_ids.shape[0]
-            if use_prompt is True:
-                prompt_kvs = self.get_prompt(batch_size=batch_size, prompt_config=self.encoder_prompt_config,
-                                            prompt_encoder=self.encoder_prompt)
-            else:
-                prompt_kvs = None
-
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -523,9 +489,8 @@ class FewVLM(T5ForConditionalGeneration):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
-                prompt_kvs=prompt_kvs
+                use_prompt=use_prompt
             )
-            print("")
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
@@ -558,26 +523,6 @@ class FewVLM(T5ForConditionalGeneration):
             vis_attention_mask = attention_mask.new_ones(B, V_L)
         encoder_attention_mask = torch.cat([attention_mask, vis_attention_mask], dim=1)
 
-        if use_prompt is True:
-            batch_size = decoder_input_ids.shape[0]
-            prompt_attention_mask = torch.ones(batch_size, self.decoder_prompt_config_1["prompt_seq_len"]).to(
-                self.device)
-            encoder_attention_mask = torch.cat([prompt_attention_mask, encoder_attention_mask], dim=1)
-
-            prompt1 = self.get_prompt(batch_size=batch_size, prompt_config=self.decoder_prompt_config_1,
-                                      prompt_encoder=self.decoder_prompt_1)
-            prompt2 = self.get_prompt(batch_size=batch_size, prompt_config=self.decoder_prompt_config_2,
-                                      prompt_encoder=self.decoder_prompt_2)
-            prompt_kvs_1 = torch.tensor([]).to(self.device)
-            prompt_kvs_2 = torch.tensor([]).to(self.device)
-            for i, prompt in enumerate(prompt1):
-                prompt_kvs_1 = torch.cat([prompt_kvs_1, prompt], dim=0)
-            for i, prompt in enumerate(prompt2):
-                prompt_kvs_2 = torch.cat([prompt_kvs_2, prompt], dim=0)
-            prompt_kvs = torch.cat([prompt_kvs_1, prompt_kvs_2], dim=-1)
-            prompt_kvs = prompt_kvs.split(2)
-        else:
-            prompt_kvs = None
         # Decode
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
@@ -593,7 +538,7 @@ class FewVLM(T5ForConditionalGeneration):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            prompt_kvs=prompt_kvs
+            use_prompt=use_prompt
         )
         # print('decoder_outputs')
         # print(decoder_outputs)
