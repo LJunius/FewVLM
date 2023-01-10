@@ -43,9 +43,11 @@ class FewVLMPretraining(FewVLM):
         task_counts = {task: 0 for task in self.losses}
         task_loss = {task: 0 for task in self.losses}
 
+
         results = {}
 
-        results['loss'] = (loss * loss_weights).mean()
+        results['loss'] = (loss * loss_weights).mean() + output['dist']
+        results['dist'] = output['dist']
         results['total_loss'] = loss.detach().sum()
         results['total_loss_count'] = len(loss)
 

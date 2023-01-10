@@ -10,16 +10,20 @@ class PromptPool(torch.nn.Module):
         super().__init__()
         self.total = config.total
         self.prompt_projection = config.prompt_projection
-        self.kdim = 768
-        self.key_list = []
-        self.device = device
-        for i in range(self.total):
-            self.key_list.append([torch.tensor(0.01*torch.rand(self.kdim), requires_grad=True,device=device)])
+        # if config.
+        self.kdim = config.d_model
 
+        self.select_times = torch.ones(6)
+        self.update_times = True
+        self.select_idx = -1
+        self.choose_pool_key = config.choose_pool_key
+        # self.device = device
+
+        self.key_list = torch.nn.Parameter(torch.tensor(0.01*torch.rand(self.total, self.kdim), requires_grad=True))
         if self.prompt_projection:
-            # Use a two-layer MLP to encode the prompt
+            # # Use a two-layer MLP to encode the prompt
             self.embeddings = torch.nn.ModuleList([torch.nn.Embedding(config.prompt_seq_len, config.hidden_size) for j in range(self.total)])
-            # self.embedding = torch.nn.Embedding(config.prompt_seq_len, config.hidden_size)
+
             self.trans = torch.nn.Sequential(
                 torch.nn.Linear(config.hidden_size, config.prompt_hidden_size),
                 torch.nn.Tanh(),
@@ -29,12 +33,19 @@ class PromptPool(torch.nn.Module):
             self.embeddings = torch.nn.ModuleList([torch.nn.Embedding(config.prompt_seq_len, config.num_decoder_layers * 2 * config.hidden_size)
                                for j in range(self.total)])
 
-    def loadPool(self):
-        pass
+    def set_idx(self, idx):
+        self.select_idx = idx
 
-    def savePool(self):
-        pass
-
+    def forward(self, prompt: torch.Tensor):
+        if self.prompt_projection:
+            if self.choose_pool_key > 0:
+                self.select_idx = self.choose_pool_key
+            # print(f"select_idx is {self.select_idx}")
+            prompt_tokens = self.embeddings[self.select_idx](prompt)
+            prompt_kvs = self.trans(prompt_tokens)
+        else:
+            prompt_kvs = self.embedding[self.select_idx](prompt)
+        return prompt_kvs
 
 class PromptEncoder(torch.nn.Module):
     r'''

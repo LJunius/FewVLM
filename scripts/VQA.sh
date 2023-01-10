@@ -1,7 +1,7 @@
 # The name of experiment
-name=$2
-
-output=snap/vqa/$name
+#name=$2
+#
+#output=snap/vqa/$name
 
 PYTHONPATH=$PYTHONPATH:./src \
 CUDA_VISIBLE_DEVICES=$1 python src/vqa.py \
@@ -20,7 +20,9 @@ CUDA_VISIBLE_DEVICES=$1 python src/vqa.py \
         --batch_size 30 \
         --valid_batch_size 1000 \
         --load snap/pretrain/Epoch30 \
-        ${@:3}
+        --num_data 16 \
+        --prompt 3 \
+        --subsample
 
 
 

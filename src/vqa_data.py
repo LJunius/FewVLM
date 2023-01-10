@@ -21,7 +21,7 @@ from tokenization import FewVLMTokenizerFast
 
 project_dir = Path(__file__).resolve().parent.parent  # FewVLM
 workspace_dir = project_dir.parent
-dataset_dir = workspace_dir.joinpath('datasets/').resolve()
+dataset_dir = workspace_dir.joinpath('autodl-tmp/').resolve()
 coco_dir = dataset_dir.joinpath('COCO')
 vg_dir = dataset_dir.joinpath('VG')
 coco_img_dir = coco_dir.joinpath('images/')
@@ -92,7 +92,7 @@ class VQAFineTuneDataset(Dataset):
                 print(f"Use only {self.topk} data")
 
         self.data = data
-        if args.subsample and split == 'train':
+        if args.subsample and 'train' in split:
             random.seed(args.dataseed)
             random.shuffle(self.data)
             if 'train' in split and mode == 'train':

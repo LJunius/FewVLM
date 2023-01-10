@@ -69,10 +69,11 @@ def parse_args(parse=True, **optional_kwargs):
     parser.add_argument('--prompt_hidden_size', type=int, default=96)
     parser.add_argument('--prompt_projection', default=True)
     parser.add_argument('--prompt_freeze_backbone', default=True)
-    parser.add_argument('--use_prompt_pool_init', default=False)
-    parser.add_argument('--train_prompt_pool', default=True)
+    parser.add_argument('--train_prompt_pool', action='store_true')
     parser.add_argument('--prompt_pool_nums', default=6)
-
+    parser.add_argument('--init_from_pool', action='store_true')
+    parser.add_argument('--choose_pool_key', type=int, default=-1)
+    parser.add_argument('--use_prompt', default=True)
     # Quick experiments
     parser.add_argument('--train_topk', type=int, default=-1)
     parser.add_argument('--valid_topk', type=int, default=-1)

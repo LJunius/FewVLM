@@ -66,9 +66,11 @@ class TrainerBase(object):
         T5Config.prompt_hidden_size = args.prompt_hidden_size
         T5Config.prompt_projection = args.prompt_projection
         T5Config.prompt_freeze_backbone = args.prompt_freeze_backbone
-        T5Config.use_prompt_pool_init = args.use_prompt_pool_init
         T5Config.train_prompt_pool = args.train_prompt_pool
+        T5Config.init_from_pool = args.init_from_pool
         T5Config.total = args.prompt_pool_nums
+        T5Config.choose_pool_key = args.choose_pool_key
+        T5Config.use_prompt = args.use_prompt
         config = config_class.from_pretrained(self.args.backbone)
 
         config.feat_dim = args.feat_dim
@@ -192,8 +194,13 @@ class TrainerBase(object):
 
     def load_checkpoint(self, ckpt_path):
         state_dict = load_state_dict(ckpt_path, 'cpu')
-
+        
         original_keys = list(state_dict.keys())
+        for key in original_keys:
+            if key.startswith("module."):
+                new_key = key[len("module."):]
+                state_dict[new_key] = state_dict.pop(key)
+
         for key in original_keys:
             if key.startswith("vis_encoder."):
                 new_key = 'encoder.' + key[len("vis_encoder."):]
@@ -202,7 +209,7 @@ class TrainerBase(object):
             if key.startswith("model.vis_encoder."):
                 new_key = 'model.encoder.' + key[len("model.vis_encoder."):]
                 state_dict[new_key] = state_dict.pop(key)
-
+        # load_
         results = self.model.load_state_dict(state_dict, strict=False)
         if self.verbose:
             print('Model loaded from ', ckpt_path)
@@ -233,14 +240,29 @@ class TrainerBase(object):
     def save(self, name):
         if not os.path.isdir(self.args.output):
             os.makedirs(self.args.output, exist_ok=True)
-        torch.save(self.model.state_dict(), os.path.join(self.args.output, "%s.pth" % name))
+        torch.save(self.model.state_dict(),
+                   os.path.join(self.args.output, "%s.pth" % name))
+        # if self.args.distributed:
+        #     torch.save({'model': self.model.state_dict(),
+        #                 'prompt_keys': self.model.module.encoder.prompt_pool[0].key_list},
+        #                os.path.join(self.args.output, "%s.pth" % name))
+        # else:
+        #     torch.save({'model': self.model.state_dict(),
+        #                 'prompt_keys': self.model.encoder.prompt_pool[0].key_list},
+        #                os.path.join(self.args.output, "%s.pth" % name))
 
     def load(self, path, loc=None):
         if loc is None and hasattr(self.args, 'gpu'):
             loc = f'cuda:{self.args.gpu}'
         state_dict = torch.load("%s.pth" % path, map_location=loc)
+        # if 'prompt_keys' in state_dict:
+        #     self.model.encoder.prompt_pool[0].key_list = state_dict['prompt_keys'].copy()
+        #     state_dict = state_dict['model']
+        #     print("#select times")
+        #     print(self.model.encoder.prompt_pool[0].select_times)
 
         original_keys = list(state_dict.keys())
+
         for key in original_keys:
             if key.startswith("module.vis_encoder."):
                 new_key = 'module.encoder.' + key[len("module.vis_encoder."):]

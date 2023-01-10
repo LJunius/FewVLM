@@ -233,8 +233,9 @@ class Trainer(TrainerBase):
                     #  'SPICE': 0.6666666666666666}
 
                     # Validation
+                    self.model.encoder.prompt_pool[0].update_times = False
                     valid_results = self.evaluate(self.val_loader)
-
+                    self.model.encoder.prompt_pool[0].update_times = True
                     valid_score = valid_results['CIDEr']
 
                     if valid_score > best_valid or epoch == 0:
@@ -269,12 +270,22 @@ class Trainer(TrainerBase):
             csv_results['prompt_seq_len'] = self.args.prompt_seq_len
             csv_results['prompt_hidden_size'] = self.args.prompt_hidden_size
             csv_results['best_epoch'] = best_epoch
+            csv_results["choose_pool_key"] = self.args.choose_pool_key
             log_str = 'Test set results\n'
             log_str += pformat(test_results)
-            csv_path = os.path.join(self.args.output, "result.csv")
+            if self.args.test_only:
+                if self.args.init_from_pool:
+                    csv_path = os.path.join(self.args.output, "init_from_pool_zero_result.csv")
+                else:
+                    csv_path = os.path.join(self.args.output, "zero_result.csv")
+            else:
+                if self.args.init_from_pool:
+                    csv_path = os.path.join(self.args.output, "init_from_pool_result.csv")
+                else:
+                    csv_path = os.path.join(self.args.output, "result.csv")
             if os.path.exists(csv_path) is False:
                 file = open(csv_path, 'w')
-                file.write("prompt_seq_len,prompt_hidden_size,best_epoch,Bleu_1,Bleu_2,Bleu_3,Bleu_4,CIDEr,METEOR,ROUGE_L,SPICE")
+                file.write("prompt_seq_len,prompt_hidden_size,best_epoch,Bleu_1,Bleu_2,Bleu_3,Bleu_4,CIDEr,METEOR,ROUGE_L,SPICE,choose_pool_key")
                 file.close()
             data = pd.read_csv(csv_path)
             data = data.append(csv_results, ignore_index=True)
@@ -335,6 +346,15 @@ class Trainer(TrainerBase):
             targets = results['targets']
             eval_results = evaluator.evaluate(predictions, targets)
             return eval_results
+
+    def infer(self, input_ids, vis_feats, vis_pos):
+        gen_kwargs = {}
+        gen_kwargs['num_beams'] = self.args.num_beams
+        gen_kwargs['max_length'] = self.args.gen_max_length
+        results = self.model.infer_step(
+            input_ids, vis_feats, vis_pos,
+            **gen_kwargs)
+        return results
 
     @staticmethod
     def oracle_score(loader):

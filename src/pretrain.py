@@ -71,7 +71,9 @@ class Trainer(TrainerBase):
         if args.load is not None:
             ckpt_path = args.load + '.pth'
             self.load_checkpoint(ckpt_path)
-            self.start_epoch = int(args.load.split('Epoch')[-1])
+            # self.start_epoch = int(args.load.split('Epoch')[-1]) # TODO: 训练prompt临时改动，需要改回
+
+            self.start_epoch = 0
 
         if self.args.from_scratch:
             self.init_weights()
@@ -235,6 +237,8 @@ class Trainer(TrainerBase):
                             loss_count = epoch_results[f'{loss_name}_count']
                             desc_str += f' {loss_name} ({loss_count}) {loss_meter.val:.3f}'
 
+                    dist_val = results['dist']
+                    desc_str += f' dist: {dist_val:.3f}'
                     pbar.set_description(desc_str)
                     pbar.update(1)
 
@@ -293,7 +297,8 @@ class Trainer(TrainerBase):
                 if avg_valid_loss < best_eval_loss:
                     best_eval_loss = avg_valid_loss
                 #     self.save("BEST_EVAL_LOSS")
-                self.save("Epoch%02d" % (epoch + 1))
+                if epoch > 2:  # TODO 临时
+                    self.save("Epoch%02d" % (epoch + 1))
 
             dist.barrier()
 
@@ -361,6 +366,7 @@ def main_worker(gpu, args):
 
     if args.distributed:
         torch.cuda.set_device(args.gpu)
+        # torch.distributed.init_process_group(backend="nccl", init_method='tcp://localhost:50000', rank=0, world_size=1)
         dist.init_process_group(backend='nccl')
 
 

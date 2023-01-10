@@ -23,7 +23,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import CrossEntropyLoss
-from prompt_pool import PromptEncoder
+from prompt_pool import PromptEncoder, PromptPool
 
 
 from transformers.activations import ACT2FN
@@ -820,7 +820,6 @@ class T5Stack(T5PreTrainedModel):
         self.device_map = None
         # ----prompt init----
         prompt_token = torch.arange(config.prompt_seq_len).long()
-        self.prompt = nn.ModuleList([PromptEncoder(config)])
         self.prompt_config = [{
             "n_heads": config.num_heads,
             "n_embd": config.hidden_size // config.num_heads,
@@ -828,8 +827,16 @@ class T5Stack(T5PreTrainedModel):
             "prompt_seq_len": config.prompt_seq_len,
             "prompt_tokens": prompt_token
         },]
+        if config.train_prompt_pool is True or config.init_from_pool:
+            self.prompt_pool = nn.ModuleList([PromptPool(config, self.device)])
+        else:
+            self.prompt = nn.ModuleList([PromptEncoder(config)])
         if config.is_decoder is True:
-            self.prompt.append(PromptEncoder(config))
+            if config.train_prompt_pool is True or config.init_from_pool:
+                self.prompt_pool.append(PromptPool(config, self.device))
+            else:
+                self.prompt.append(PromptEncoder(config))
+
             prompt_token_2 = torch.arange(config.prompt_seq_len).long()
             self.prompt_config.append({
                 "n_heads": config.num_heads,
@@ -855,28 +862,50 @@ class T5Stack(T5PreTrainedModel):
         prompt_kvs = prompt_kvs.permute([2, 0, 3, 1, 4]).split(2)
         return prompt_kvs
 
-    def similarity(self, pool, q, k, topN):
+    def get_prompt_form_prompt_pool(self, pool, query, batch_size, prompt_config):
+        # B, D = query.shape
+        # key_tensor = torch.stack(pool.key_list).to(self.device)
+        key_tensor = pool.key_list.to(self.device)
+        pool.select_times = pool.select_times.to(self.device)
+        distance, selectedKeys = self.similarity(query, key_tensor, 1, pool.select_times.clone())
+        idx = selectedKeys
+
+        if pool.update_times:
+            pool.select_times[idx] += 0.01 # TODO 最佳配置
+        prompt_kvs = self.get_prompt(batch_size, prompt_config, pool)
+
+        return prompt_kvs, distance, idx
+
+    def similarity(self, q, k, topN, select_times):
         q = nn.functional.normalize(q, dim=-1)
         k = nn.functional.normalize(k, dim=-1)
 
         sim = torch.matmul(q, k.T)  # (B, T)
         dist = 1 - sim
+        choose_dist = dist * select_times
+        # TODO 会有梯度爆炸 可能原因select_times增加, 解决办法, n_dist = dist * select_times
+        val, idx = torch.topk(choose_dist, topN, dim=-1, largest=False)
+        s = []
+        count = []
+        for i in range(6):
+            z = idx == i
+            count.append(z)
+            s.append(z.sum())
+        choose_val, choose_idx = torch.topk(torch.stack(s), 1, dim=-1, largest=True)
+        tmp_idx = count[choose_idx]
+        dist_ave = torch.gather(dist, 2, idx)
+        dist_mean = dist_ave[tmp_idx].mean()
 
-        val, idx = torch.topk(dist, topN, dim=1, largest=False)
-
-        dist_pick = []
-        for b in range(idx.shape[0]):
-            pick = []
-            for i in range(idx.shape[1]):
-                pick.append(dist[b][idx[b][i]])
-            dist_pick.append(torch.stack(pick))
-
-        dist = torch.stack(dist_pick)
-
-        return dist, idx
-
-    def get_prompt_form_prompt_pool(self):
-        pass
+        # dist_pick = []
+        # for b in range(idx.shape[0]):
+        #     pick = []
+        #     for i in range(idx.shape[1]):
+        #         pick.append(dist[b][idx[b][i]])
+        #     dist_pick.append(torch.stack(pick))
+        #
+        # dist = torch.stack(dist_pick)
+        # return dist[0][0], idx[0][0]
+        return dist_mean, choose_idx[0]
 
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
@@ -931,7 +960,7 @@ class T5Stack(T5PreTrainedModel):
         output_hidden_states=None,
         return_dict=None,
         prompt_kvs=None,
-        use_prompt=False,
+        use_prompt=True,
     ):
         # Model parallel
         if self.model_parallel:
@@ -946,10 +975,16 @@ class T5Stack(T5PreTrainedModel):
                     self.device)
                 encoder_attention_mask = torch.cat([prompt_attention_mask, encoder_attention_mask], dim=1)
 
-                prompt1 = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[0],
-                                          prompt_encoder=self.prompt[0])
-                prompt2 = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[1],
-                                          prompt_encoder=self.prompt[1])
+                if self.config.train_prompt_pool is True or self.config.init_from_pool:
+                    prompt1 = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[0],
+                                              prompt_encoder=self.prompt_pool[0])
+                    prompt2 = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[1],
+                                              prompt_encoder=self.prompt_pool[1]) #TODO 统一化代码
+                else:
+                    prompt1 = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[0],
+                                              prompt_encoder=self.prompt[0])
+                    prompt2 = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[1],
+                                              prompt_encoder=self.prompt[1])
                 prompt_kvs_1 = torch.tensor([]).to(self.device)
                 prompt_kvs_2 = torch.tensor([]).to(self.device)
                 for i, prompt in enumerate(prompt1):

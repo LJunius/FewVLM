@@ -106,7 +106,8 @@ class VisualEmbedding(nn.Module):
         assert pos.size() == (B, N, 4)
 
         feat_embedding = self.feat_embedding(feats)
-        query_embed = feat_embedding[0][0]
+        query_embed = feat_embedding
+        # query_embed = feat_embedding[0:1, 0, :]
         device = feats.device
         dtype = feats.dtype
 
@@ -168,7 +169,7 @@ class JointEncoder(T5Stack):
         self.device_map = None
         # ----prompt init----
         prompt_token = torch.arange(config.prompt_seq_len).long()
-        self.prompt = nn.ModuleList([PromptEncoder(config)])
+
         self.prompt_config = [{
             "n_heads": config.num_heads,
             "n_embd": config.hidden_size // config.num_heads,
@@ -176,8 +177,10 @@ class JointEncoder(T5Stack):
             "prompt_seq_len": config.prompt_seq_len,
             "prompt_tokens": prompt_token
         }, ]
-        if config.train_prompt_pool is True: #TODO: 修改prompt pool和single prompt的存在关系
-            self.prompt_pool = PromptPool(config, self.device)
+        if config.init_from_pool or config.train_prompt_pool is True:
+            self.prompt_pool = nn.ModuleList([PromptPool(config, self.device)])
+        else:
+            self.prompt = nn.ModuleList([PromptEncoder(config)])
         print('')
 
     def set_input_embeddings(self, new_embeddings):
@@ -200,7 +203,7 @@ class JointEncoder(T5Stack):
         output_hidden_states=None,
         return_dict=None,
         prompt_kvs=None,
-        use_prompt=False
+        use_prompt=True
     ):
 
         if inputs_embeds is None:
@@ -232,17 +235,29 @@ class JointEncoder(T5Stack):
 
         attention_mask = torch.cat([attention_mask, vis_attention_mask], dim=1)
         prompt_seq_len = 0
+        dist = 0
+        idx = -1
         if use_prompt is True:
+            batch_size = input_ids.shape[0]
             if self.config.train_prompt_pool is True:
-                # TODO
-                pass
+                prompt_kvs, dist, idx = self.get_prompt_form_prompt_pool(self.prompt_pool[0], query_embed,
+                                                                    batch_size, self.prompt_config[0])
+                self.prompt_pool[0].set_idx(idx)
+            elif self.config.init_from_pool is True:
+                prompt_kvs, dist, idx = self.get_prompt_form_prompt_pool(self.prompt_pool[0], query_embed,
+                                                                         batch_size, self.prompt_config[0])
+                if self.prompt_pool[0].select_idx == -1:  # only fisrt iter choose idx
+                    self.prompt_pool[0].set_idx(idx)
+                    print(f"\nencoder choose prompt embedding{idx}")
+                else:
+                    idx = -1  # to avoid decoder change idx
+
             else:
-                batch_size = input_ids.shape[0]
                 prompt_kvs = self.get_prompt(batch_size=batch_size, prompt_config=self.prompt_config[0],
                                              prompt_encoder=self.prompt[0])
-                prompt_seq_len = prompt_kvs[0][0].shape[2]
-                prompt_attention_mask = torch.ones(B, prompt_kvs[0][0].shape[2]).to(self.device)
-                attention_mask = torch.cat((prompt_attention_mask, attention_mask), dim=1)
+            prompt_seq_len = prompt_kvs[0][0].shape[2]
+            prompt_attention_mask = torch.ones(B, prompt_kvs[0][0].shape[2]).to(self.device)
+            attention_mask = torch.cat((prompt_attention_mask, attention_mask), dim=1)
 
         # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask = self.get_extended_attention_mask(
@@ -351,6 +366,9 @@ class JointEncoder(T5Stack):
                 ]
                 if v is not None
             )
+        if self.config.train_prompt_pool is True or self.config.init_from_pool is True:
+            BaseModelOutputWithPastAndCrossAttentions.dist = dist
+            BaseModelOutputWithPastAndCrossAttentions.idx = idx
         return BaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=hidden_states,
             past_key_values=present_key_value_states,
@@ -378,7 +396,6 @@ class FewVLM(T5ForConditionalGeneration):
         self.model_dim = config.d_model
 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
-
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
         encoder_config.use_cache = False
@@ -396,12 +413,12 @@ class FewVLM(T5ForConditionalGeneration):
         self.decoder = T5Stack(decoder_config, self.shared)
         self.dropout = nn.Dropout(0.05)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
-
+        self.use_prompt = config.use_prompt
         self.init_weights()
 
-        logger.info("tune parameter:")
+        print("tune parameter:")
         for name, param in self.named_parameters():
-            if (name.startswith("encoder.prompt") or name.startswith("decoder.prompt")) is False:
+            if (name.startswith("encoder.prompt") or name.startswith("prompt") or name.startswith("decoder.prompt")) is False:
                 if config.prompt_freeze_backbone is True:
                     param.requires_grad = False
             else:
@@ -468,13 +485,12 @@ class FewVLM(T5ForConditionalGeneration):
         reduce_loss=False,
 
         return_hidden_state=False,
-        use_prompt=True,
         **kwargs,
     ):
 
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+        use_prompt = self.use_prompt
 
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
@@ -492,6 +508,9 @@ class FewVLM(T5ForConditionalGeneration):
                 use_prompt=use_prompt
             )
         elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+            if self.config.train_prompt_pool or self.config.init_from_pool:
+                BaseModelOutput.idx = encoder_outputs.idx
+                BaseModelOutput.dist = encoder_outputs.dist
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=encoder_outputs[0],
                 hidden_states=encoder_outputs[1] if len(
@@ -502,6 +521,13 @@ class FewVLM(T5ForConditionalGeneration):
 
         hidden_states = encoder_outputs[0]
 
+        if self.config.train_prompt_pool or self.config.init_from_pool:
+            idx = encoder_outputs.idx
+            dist = encoder_outputs.dist
+            if idx != -1:
+                self.decoder.prompt_pool[0].set_idx(idx)
+                self.decoder.prompt_pool[1].set_idx(idx)
+                # print(f"decoder choose prompt embedding{idx}")
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
             decoder_input_ids = self._shift_right(labels)
@@ -571,15 +597,30 @@ class FewVLM(T5ForConditionalGeneration):
             loss = loss_fct(
                 lm_logits.view(-1, lm_logits.size(-1)),
                 labels.view(-1))
-
-            # print('loss')
-            # print(loss)
+        if self.config.train_prompt_pool is True and dist != 0:
+            return VLSeq2SeqLMOutput(
+                dist=dist,
+                loss=loss,
+                logits=lm_logits,
+                past_key_values=decoder_outputs.past_key_values,
+                decoder_last_hidden_state=decoder_outputs.last_hidden_state,
+                decoder_hidden_states=decoder_outputs.hidden_states,
+                # decoder_attentions=decoder_outputs.attentions,
+                # encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+                # encoder_hidden_states=encoder_outputs.hidden_states,
+                # encoder_attentions=encoder_outputs.attentions,
+                # vis_encoder_last_hidden_state=vis_encoder_outputs.last_hidden_state,
+                # vis_encoder_hidden_states=vis_encoder_outputs.hidden_states,
+                # vis_encoder_attentions=vis_encoder_outputs.attentions,
+                # cross_encoder_outputs=cross_encoder_outputs
+            )
 
         # if not return_dict:
         #     output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
         #     return ((loss,) + output) if loss is not None else output
 
         return VLSeq2SeqLMOutput(
+            dist=0,
             loss=loss,
             logits=lm_logits,
             past_key_values=decoder_outputs.past_key_values,
@@ -697,7 +738,7 @@ class VLSeq2SeqLMOutput(ModelOutput):
             Attentions weights of the encoder, after the attention softmax, used to compute the weighted average in the
             self-attention heads.
     """
-
+    dist: Optional[torch.FloatTensor] = None
     loss: Optional[torch.FloatTensor] = None
     logits: torch.FloatTensor = None
     past_key_values: Optional[List[torch.FloatTensor]] = None

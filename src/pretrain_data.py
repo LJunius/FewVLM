@@ -21,8 +21,8 @@ import preprocess
 
 project_dir = Path(__file__).resolve().parent.parent 
 workspace_dir = project_dir.parent
-workspace_dir = Path('/home/woojeong/VL-T5_eval')
-dataset_dir = workspace_dir.joinpath('datasets/').resolve()
+workspace_dir = Path('/root')
+dataset_dir = workspace_dir.joinpath('autodl-tmp/').resolve()
 coco_dir = dataset_dir.joinpath('COCO')
 vg_dir = dataset_dir.joinpath('VG')
 cc_dir = dataset_dir.joinpath('conceptual_captions')
@@ -172,12 +172,14 @@ class PretrainDataset(Dataset):
         self.data_captions = [datum for datum in data if datum['text_source'] in caption_sources]
         self.n_data_captions = len(self.data_captions)
 
-        if self.verbose:
-            print('# itm data:', self.n_data_captions)
+
 
         self.data = data
-        self.n_data = len(self.data)
+        # self.data = self.data_captions
 
+        self.n_data = len(self.data)
+        if self.verbose:
+            print('# itm data:', self.n_data)
         if self.verbose and is_train:
             from collections import Counter
             task_counter = Counter()
@@ -212,12 +214,14 @@ class PretrainDataset(Dataset):
                 # self.tokenizer = FewVLMTokenizer.from_pretrained(
                 #     args.backbone, do_lower_case=args.do_lower_case)
                 self.tokenizer = FewVLMTokenizerFast.from_pretrained(
-                    args.backbone, do_lower_case=args.do_lower_case)
+                    args.backbone, do_lower_case=args.do_lower_case,
+                    use_auth_token="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")
             else:
                 # self.tokenizer = T5Tokenizer.from_pretrained(
                 #     args.backbone, do_lower_case=args.do_lower_case)
                 self.tokenizer = T5TokenizerFast.from_pretrained(
-                    args.backbone, do_lower_case=args.do_lower_case)
+                    args.backbone, do_lower_case=args.do_lower_case,
+                    use_auth_token="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")
 
 
 

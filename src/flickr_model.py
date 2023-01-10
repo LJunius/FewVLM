@@ -53,3 +53,16 @@ class FewVLMCOCOCaption(FewVLM):
         result['pred'] = generated_sents
 
         return result
+
+    def infer_step(self, input_ids, vis_feats, vis_pos, **kwargs):
+        device = next(self.parameters()).device
+        vis_feats = vis_feats.to(device)
+        input_ids = input_ids.to(device)
+        vis_pos = vis_pos.to(device)
+        output = self.generate(
+            input_ids=input_ids,
+            vis_inputs=(vis_feats, vis_pos),
+            **kwargs
+        )
+        generated_sents = self.tokenizer.batch_decode(output, skip_special_tokens=True)
+        return generated_sents

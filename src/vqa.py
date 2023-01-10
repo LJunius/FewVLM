@@ -1,4 +1,5 @@
 
+import pandas as pd
 import torch.backends.cudnn as cudnn
 import torch.multiprocessing as mp
 import torch.distributed as dist
@@ -259,6 +260,32 @@ class Trainer(TrainerBase):
             acc_dict_all = evaluator.evaluate_raw(quesid2ans)
             acc_dict_answerable = evaluator.evaluate_raw(quesid2ans, is_topk_optimal=True)
             acc_dict_unanswerable = evaluator.evaluate_raw(quesid2ans, is_topk_optimal=False)
+
+            csv_results = {}
+            csv_results['overall'] = acc_dict_all['overall']
+            csv_results['prompt_seq_len'] = self.args.prompt_seq_len
+            csv_results['prompt_hidden_size'] = self.args.prompt_hidden_size
+            csv_results['best_epoch'] = best_epoch
+            csv_results["choose_pool_key"] = self.args.choose_pool_key
+            if self.args.test_only:
+                if self.args.init_from_pool:
+                    csv_path = os.path.join(self.args.output, "init_from_pool_zero_result.csv")
+                else:
+                    csv_path = os.path.join(self.args.output, "zero_result.csv")
+            else:
+                if self.args.init_from_pool:
+                    csv_path = os.path.join(self.args.output, "init_from_pool_result.csv")
+                else:
+                    csv_path = os.path.join(self.args.output, "result.csv")
+            if os.path.exists(csv_path) is False:
+                file = open(csv_path, 'w')
+                file.write(
+                    "prompt_seq_len,prompt_hidden_size,best_epoch,choose_pool_key,overall")
+                file.close()
+            data = pd.read_csv(csv_path)
+            data = data.append(csv_results, ignore_index=True)
+
+            data.to_csv(csv_path, index=False)
 
             log_dict = {}
             log_dict['Test/overall'] = acc_dict_all['overall']

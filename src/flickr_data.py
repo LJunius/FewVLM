@@ -45,7 +45,6 @@ class COCOCaptionFineTuneDataset(Dataset):
 
         if self.args.tokenizer is None:
             self.args.tokenizer = self.args.backbone
-        proxies = {'http': '127.0.0.1:7890', 'https': '127.0.0.1:7890', "socks5": "127.0.0.1:7890"}
         if 't5' in self.args.tokenizer:
             if self.args.use_vision:
                 self.tokenizer = FewVLMTokenizerFast.from_pretrained(
